@@ -37,6 +37,8 @@ type TypingTest struct {
 	Words           words.WordList
 	K               int
 	MinLength       int
+
+	WPMTarget int
 }
 
 type Keystroke struct {
@@ -57,14 +59,15 @@ func doTick() tea.Msg {
 }
 
 func NewTypingTest() TypingTest {
-	filteredWords := words.Words20k.TopK(10000).LongerThan(3).FilterOutLetter(strings.Split(words.LETTERS, "")[6:26])
+	filteredWords := words.Words20k.TopK(10000).LongerThan(4).FilterOutLetter(strings.Split(words.LETTERS, "")[6:26])
 	return TypingTest{
 		UnlockedLetters: 6,
 		Words:           filteredWords,
 		K:               10000,
-		MinLength:       3,
+		MinLength:       4,
 
-		Target: strings.Split(strings.ReplaceAll(filteredWords.TakeChars(100), " ", SPACE), ""),
+		Target:    strings.Split(strings.ReplaceAll(filteredWords.TakeChars(200), " ", SPACE), ""),
+		WPMTarget: 35,
 	}
 }
 
@@ -73,7 +76,7 @@ func (t *TypingTest) UpdateWordList() {
 }
 
 func (t *TypingTest) NewTarget() {
-	t.Target = strings.Split(strings.ReplaceAll(t.Words.TakeChars(100), " ", SPACE), "")
+	t.Target = strings.Split(strings.ReplaceAll(t.Words.TakeChars(200), " ", SPACE), "")
 	t.Keystrokes = []Keystroke{}
 	t.Started = false
 	t.Completed = false
@@ -215,7 +218,7 @@ func (t TypingTest) View() string {
 		style := lipgloss.NewStyle().Foreground(Untyped)
 
 		if i == numTyped {
-			style = style.Background(IndexBackground)
+			style = style.Foreground(IndexBackground).Underline(true)
 			res += style.Render(string(t.Target[i]))
 		} else if i >= numTarget {
 			style = lipgloss.NewStyle().Background(Incorrect)
@@ -247,7 +250,7 @@ func (t TypingTest) View() string {
 	}
 
 	res = lipgloss.NewStyle().Width(t.WindowWidth / 4 * 3).Align(lipgloss.Center).Render(res)
-	res = lipgloss.Place(t.WindowWidth, t.WindowHeight-5, lipgloss.Center, lipgloss.Center, res)
+	res = lipgloss.Place(t.WindowWidth, t.WindowHeight-6, lipgloss.Center, lipgloss.Center, res, lipgloss.WithWhitespaceBackground(lipgloss.NewStyle().GetBackground()))
 
 	duration := time.Duration(0)
 	if t.Completed {
@@ -265,13 +268,18 @@ func (t TypingTest) View() string {
 
 	timeText := fmt.Sprintf("%02d:%02d.%03d", minutes, seconds, milliseconds)
 
-	res = lipgloss.JoinVertical(lipgloss.Center, letters, res, timeText)
+	res = lipgloss.JoinVertical(lipgloss.Center, fmt.Sprintf("Target: %d WPM", t.WPMTarget), letters, res, timeText)
 
 	if t.Completed {
 		cpm := float64(len(t.Target)) / duration.Minutes()
 		wpm := cpm / 5.
 
 		rateStats := fmt.Sprintf("%d WPM", int(wpm))
+		if int(wpm) > t.WPMTarget {
+			rateStats = lipgloss.NewStyle().Foreground(Correct).Render(rateStats)
+		} else {
+			rateStats = lipgloss.NewStyle().Foreground(Incorrect).Render(rateStats)
+		}
 		results := t.Evaluate()
 
 		charStats := lipgloss.JoinHorizontal(
