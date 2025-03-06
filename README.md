@@ -4,7 +4,7 @@ A simple program for practicing typing, largely inspired by [keybr](https://www.
 
 ## Instructions
 ```bash
-git clone 
+git clone https://github.com/jfosburgh/keys.git
 cd keys
 go mod tidy
 go run ./cmd/tui/
