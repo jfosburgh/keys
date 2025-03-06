@@ -2,7 +2,6 @@ package models
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ var (
 	Untyped         = lipgloss.Color("#3e3f3e")
 	Correct         = lipgloss.Color("#0f890b")
 	Incorrect       = lipgloss.Color("#b21114")
+	Fixed           = lipgloss.Color("#d8532e")
 	IndexBackground = lipgloss.Color("#dddddd")
 
 	TickTimeMS = time.Millisecond * 10
@@ -24,6 +24,7 @@ var (
 type TypingTest struct {
 	Target     []string
 	Keystrokes []Keystroke
+	Index      int
 
 	StartTime time.Time
 
@@ -38,12 +39,25 @@ type TypingTest struct {
 	K               int
 	MinLength       int
 
+	LessonLength int
+
 	WPMTarget int
 }
 
+type KeystrokeStatus uint
+
+const (
+	UNTYPED KeystrokeStatus = iota
+	CORRECT
+	ERROR_UNFIXED
+	ERROR_FIXED
+)
+
 type Keystroke struct {
-	Value   string
-	TypedAt time.Time
+	ExpectedValue string
+	Value         string
+	TypedAt       time.Time
+	Status        KeystrokeStatus
 }
 
 type Result struct {
@@ -59,16 +73,19 @@ func doTick() tea.Msg {
 }
 
 func NewTypingTest() TypingTest {
-	filteredWords := words.Words20k.TopK(10000).LongerThan(4).FilterOutLetter(strings.Split(words.LETTERS, "")[6:26])
-	return TypingTest{
+	t := TypingTest{
 		UnlockedLetters: 6,
-		Words:           filteredWords,
 		K:               10000,
 		MinLength:       4,
+		LessonLength:    125,
 
-		Target:    strings.Split(strings.ReplaceAll(filteredWords.TakeChars(200), " ", SPACE), ""),
 		WPMTarget: 35,
 	}
+
+	t.UpdateWordList()
+	t.NewTarget()
+
+	return t
 }
 
 func (t *TypingTest) UpdateWordList() {
@@ -76,80 +93,72 @@ func (t *TypingTest) UpdateWordList() {
 }
 
 func (t *TypingTest) NewTarget() {
-	t.Target = strings.Split(strings.ReplaceAll(t.Words.TakeChars(200), " ", SPACE), "")
-	t.Keystrokes = []Keystroke{}
+	t.Index = 0
+	t.Target = strings.Split(strings.ReplaceAll(t.Words.TakeChars(t.LessonLength), " ", SPACE), "")
+	t.Keystrokes = make([]Keystroke, len(t.Target))
+	for i := range t.Target {
+		t.Keystrokes[i].ExpectedValue = t.Target[i]
+	}
 	t.Started = false
 	t.Completed = false
 }
 
-func (t TypingTest) FilteredLength() int {
-	letters := 0
-
-	nonLetters := []string{"backspace", "ctrl+h", "ctrl+backspace"}
-
-	for _, keystroke := range t.Keystrokes {
-		if !slices.Contains(nonLetters, keystroke.Value) {
-			letters += 1
-		}
+func (t *TypingTest) ProcessKeystroke(key string) {
+	if (strings.Contains(key, "backspace") || key == "ctrl+h") && t.Index <= 1 {
+		t.Keystrokes[0].Value = ""
+		t.Index = 0
+		return
 	}
 
-	return letters
-}
-
-func (t TypingTest) Evaluate() Result {
-	length := len(t.Target)
-	result := Result{
-		Characters: length,
-		Mistakes:   t.FilteredLength() - length,
-	}
-
-	return result
-}
-
-func (t TypingTest) Typed() []string {
-	characters := []string{}
-
-	for _, keystroke := range t.Keystrokes {
-		if keystroke.Value == "backspace" && len(characters) > 0 {
-			characters = characters[:len(characters)-1]
-			continue
-		}
-
-		if keystroke.Value == "ctrl+backspace" || keystroke.Value == "ctrl+h" {
-			if len(characters) <= 1 {
-				characters = []string{}
-				continue
+	if key == "backspace" {
+		t.Index -= 1
+		t.Keystrokes[t.Index].Value = ""
+		return
+	} else if key == "ctrl+backspace" || key == "ctrl+h" {
+		t.Index -= 1
+		for t.Keystrokes[t.Index].Value != SPACE {
+			t.Keystrokes[t.Index].Value = ""
+			if t.Index == 0 {
+				return
 			}
 
-			if characters[len(characters)-1] == " " {
-				characters = characters[:len(characters)-1]
-			}
-
-			for len(characters) > 0 && characters[len(characters)-1] != " " {
-				characters = characters[:len(characters)-1]
-			}
-
-			continue
-		}
-
-		characters = append(characters, keystroke.Value)
-	}
-
-	return strings.Split(strings.ReplaceAll(strings.Join(characters, ""), " ", SPACE), "")
-}
-
-func compare(target, test []string) bool {
-	if len(target) != len(test) {
-		return false
-	}
-
-	for i := range len(target) {
-		if target[i] != test[i] {
-			return false
+			t.Index -= 1
 		}
 	}
 
-	return true
+	if key == " " {
+		t.Keystrokes[t.Index].Value = SPACE
+	} else {
+		t.Keystrokes[t.Index].Value = key
+	}
+
+	t.Keystrokes[t.Index].TypedAt = time.Now()
+
+	correct := t.Keystrokes[t.Index].Value == t.Keystrokes[t.Index].ExpectedValue
+	switch t.Keystrokes[t.Index].Status {
+	case UNTYPED:
+		if correct {
+			t.Keystrokes[t.Index].Status = CORRECT
+		} else {
+			t.Keystrokes[t.Index].Status = ERROR_UNFIXED
+		}
+	case CORRECT:
+		if !correct {
+			t.Keystrokes[t.Index].Status = ERROR_UNFIXED
+		}
+	case ERROR_UNFIXED:
+		if correct {
+			t.Keystrokes[t.Index].Status = ERROR_FIXED
+		}
+	case ERROR_FIXED:
+		if !correct {
+			t.Keystrokes[t.Index].Status = ERROR_UNFIXED
+		}
+	}
+
+	t.Completed = t.Keystrokes[len(t.Keystrokes)-1].Status != UNTYPED
+
+	t.Index += 1
 }
 
 func (t TypingTest) Init() tea.Cmd {
@@ -194,12 +203,7 @@ func (t TypingTest) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return t, nil
 			}
 
-			t.Keystrokes = append(t.Keystrokes, Keystroke{
-				Value:   msg.String(),
-				TypedAt: time.Now(),
-			})
-
-			t.Completed = compare(t.Target, t.Typed())
+			t.ProcessKeystroke(msg.String())
 		}
 	}
 
@@ -209,31 +213,24 @@ func (t TypingTest) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (t TypingTest) View() string {
 	res := ""
 
-	typed := t.Typed()
-
-	numTyped := len(typed)
-	numTarget := len(t.Target)
-
-	for i := range max(numTyped, len(t.Target)) {
+	for i := range len(t.Keystrokes) {
 		style := lipgloss.NewStyle().Foreground(Untyped)
+		key := t.Keystrokes[i].ExpectedValue
 
-		if i == numTyped {
+		if i == t.Index {
 			style = style.Foreground(IndexBackground).Underline(true)
-			res += style.Render(string(t.Target[i]))
-		} else if i >= numTarget {
-			style = lipgloss.NewStyle().Background(Incorrect)
-			res += style.Render(string(typed[i]))
-		} else if i < numTyped {
-			if typed[i] == t.Target[i] {
-				style = lipgloss.NewStyle().Foreground(Correct)
-				res += style.Render(string(typed[i]))
-			} else {
-				style = lipgloss.NewStyle().Background(Incorrect)
-				res += style.Render(string(typed[i]))
+		} else if i < t.Index {
+			key = t.Keystrokes[i].Value
+			switch t.Keystrokes[i].Status {
+			case CORRECT:
+				style = style.Foreground(Correct)
+			case ERROR_FIXED:
+				style = style.Foreground(Fixed)
+			case ERROR_UNFIXED:
+				style = style.Background(Incorrect).Foreground(IndexBackground)
 			}
-		} else {
-			res += style.Render(string(t.Target[i]))
 		}
+		res += style.Render(key)
 	}
 
 	letters := ""
@@ -249,7 +246,41 @@ func (t TypingTest) View() string {
 		}
 	}
 
-	res = lipgloss.NewStyle().Width(t.WindowWidth / 4 * 3).Align(lipgloss.Center).Render(res)
+	max_w := max(1, t.WindowWidth/4) * 3
+	w, _ := lipgloss.Size(res)
+	n_lines := max(3, w/max_w)
+
+	char_per_line := w / n_lines
+
+	words := strings.Split(res, SPACE)
+	res = ""
+	line := " "
+	c_in_line := 0
+	for _, word := range words {
+		word_width, _ := lipgloss.Size(word)
+		c_in_line += word_width
+
+		if line != " " {
+			line += SPACE
+		}
+
+		line += word
+
+		if c_in_line >= char_per_line {
+			line += " "
+			if res == "" {
+				res = line
+			} else {
+				res = lipgloss.JoinVertical(lipgloss.Left, res, line)
+			}
+
+			c_in_line = 0
+			line = " "
+		}
+	}
+	res = lipgloss.JoinVertical(lipgloss.Left, res, line)
+	res = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).Foreground(lipgloss.Color("#000000")).Render(res)
+
 	res = lipgloss.Place(t.WindowWidth, t.WindowHeight-6, lipgloss.Center, lipgloss.Center, res, lipgloss.WithWhitespaceBackground(lipgloss.NewStyle().GetBackground()))
 
 	duration := time.Duration(0)
@@ -280,16 +311,29 @@ func (t TypingTest) View() string {
 		} else {
 			rateStats = lipgloss.NewStyle().Foreground(Incorrect).Render(rateStats)
 		}
-		results := t.Evaluate()
+
+		total, correct, fixed, unfixed := 0, 0, 0, 0
+		for _, keystroke := range t.Keystrokes {
+			total += 1
+			switch keystroke.Status {
+			case CORRECT:
+				correct += 1
+			case ERROR_FIXED:
+				fixed += 1
+			case ERROR_UNFIXED:
+				unfixed += 1
+			}
+		}
 
 		charStats := lipgloss.JoinHorizontal(
 			lipgloss.Center,
-			fmt.Sprintf("%d", results.Characters), "/",
-			lipgloss.NewStyle().Foreground(Correct).Render(fmt.Sprintf("%d", results.Characters-results.Mistakes)), "/",
-			lipgloss.NewStyle().Foreground(Incorrect).Render(fmt.Sprintf("%d", results.Mistakes)),
+			fmt.Sprintf("%d", total), "/",
+			lipgloss.NewStyle().Foreground(Correct).Render(fmt.Sprintf("%d", correct)), "/",
+			lipgloss.NewStyle().Foreground(Fixed).Render(fmt.Sprintf("%d", fixed)), "/",
+			lipgloss.NewStyle().Foreground(Incorrect).Render(fmt.Sprintf("%d", unfixed)),
 		)
 
-		accuracy := 1.0 - float32(results.Mistakes)/float32(results.Characters)
+		accuracy := float32(correct) / float32(total)
 		accuracyStats := fmt.Sprintf("%.02f%% Accuracy", accuracy*100.)
 
 		res = lipgloss.JoinVertical(lipgloss.Center, res, rateStats, charStats, accuracyStats)
